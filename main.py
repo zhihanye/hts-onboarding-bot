@@ -80,6 +80,7 @@ def send_onboarding_email(to_email: str, entity_name: str) -> None:
             "subject": subject,
             "body": {"contentType": "HTML", "content": html_body},
             "toRecipients": [{"emailAddress": {"address": to_email}}],
+            "ccRecipients": [{"emailAddress": {"address": "james.yang@hashkey.com"}}],
             "attachments": attachments,
         },
         "saveToSentItems": True,
