@@ -145,6 +145,22 @@ def extract_info_from_image(image_bytes: bytes) -> dict:
 
 # ─── Telegram Bot ─────────────────────────────────────────────────────────────
 
+async def _send_confirmation(message, email: str, entity_name: str) -> None:
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ 确认发送", callback_data="confirm"),
+        InlineKeyboardButton("❌ 取消", callback_data="cancel"),
+    ]])
+    await message.reply_text(
+        f"识别结果：\n"
+        f"📧 邮箱：{email}\n"
+        f"🏢 公司：{entity_name}\n\n"
+        f"主题：HTS CORPORATE ONBOARDING – {entity_name}\n"
+        f"附件：Corporate Account Opening Form + AI Declaration Form\n\n"
+        f"确认发送？",
+        reply_markup=keyboard,
+    )
+
+
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data["started"] = True
     await update.message.reply_text(
@@ -183,24 +199,35 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         context.user_data["pending_email"] = email
         context.user_data["pending_entity"] = entity_name
 
-        keyboard = InlineKeyboardMarkup([[
-            InlineKeyboardButton("✅ 确认发送", callback_data="confirm"),
-            InlineKeyboardButton("❌ 取消", callback_data="cancel"),
-        ]])
+        if not entity_name:
+            context.user_data["waiting_for_entity"] = True
+            await message.reply_text(
+                f"识别结果：\n"
+                f"📧 邮箱：{email}\n"
+                f"🏢 公司：未能识别\n\n"
+                f"请手动输入公司名称："
+            )
+            return
 
-        await message.reply_text(
-            f"识别结果：\n"
-            f"📧 邮箱：{email}\n"
-            f"🏢 公司：{entity_name or '未识别'}\n\n"
-            f"主题：HTS CORPORATE ONBOARDING – {entity_name or 'New Client'}\n"
-            f"附件：Corporate Account Opening Form + AI Declaration Form\n\n"
-            f"确认发送？",
-            reply_markup=keyboard,
-        )
+        await _send_confirmation(message, email, entity_name)
 
     except Exception as e:
         logger.error(f"处理失败: {e}", exc_info=True)
         await message.reply_text(f"❌ 处理失败：{e}")
+
+
+async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    message = update.message
+
+    if not context.user_data.get("waiting_for_entity"):
+        return
+
+    entity_name = message.text.strip()
+    context.user_data["pending_entity"] = entity_name
+    context.user_data["waiting_for_entity"] = False
+
+    email = context.user_data.get("pending_email", "")
+    await _send_confirmation(message, email, entity_name)
 
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -245,6 +272,7 @@ def main() -> None:
     app = Application.builder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", cmd_start))
     app.add_handler(MessageHandler(filters.PHOTO, handle_photo))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     app.add_handler(CallbackQueryHandler(handle_callback))
     app.add_error_handler(handle_error)
     logger.info("Bot 已启动，等待截图...")
