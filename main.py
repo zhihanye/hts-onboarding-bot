@@ -65,7 +65,8 @@ def get_graph_token() -> str:
 
 def send_onboarding_email(to_email: str, entity_name: str, region: str) -> None:
     subject_entity = entity_name if entity_name else "New Client"
-    subject = f"HTS CORPORATE ONBOARDING – {subject_entity}"
+    region_prefix = "HK" if region == "hk" else "SG"
+    subject = f"{region_prefix} HTS CORPORATE ONBOARDING – {subject_entity}"
 
     if region == "hk":
         html_body = TEMPLATE_HK.read_text(encoding="utf-8")
