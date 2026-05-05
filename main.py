@@ -283,8 +283,21 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         context.user_data["pending_region"] = region
         email = context.user_data.get("pending_email", "")
         entity_name = context.user_data.get("pending_entity", "")
-        await query.delete_message()
-        await _send_confirmation(query.message.reply_to_message or query.message, email, entity_name, region)
+        region_label = "🇸🇬 新加坡" if region == "sg" else "🇭🇰 香港"
+        attachment_note = "附件：Corporate Account Opening Form + AI Declaration Form\n" if region == "sg" else ""
+        keyboard = InlineKeyboardMarkup([[
+            InlineKeyboardButton("✅ 确认发送", callback_data="confirm"),
+            InlineKeyboardButton("❌ 取消", callback_data="cancel"),
+        ]])
+        await query.edit_message_text(
+            f"发送确认：\n"
+            f"📧 邮箱：{email}\n"
+            f"🏢 公司：{entity_name}\n"
+            f"🌏 地区：{region_label}\n"
+            f"{attachment_note}\n"
+            f"确认发送？",
+            reply_markup=keyboard,
+        )
         return
 
     # 确认发送
