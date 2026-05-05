@@ -14,6 +14,7 @@ from telegram.ext import (
     Application, MessageHandler, CommandHandler,
     CallbackQueryHandler, filters, ContextTypes,
 )
+from email_analyzer import analyze_email
 
 load_dotenv()
 
@@ -32,11 +33,15 @@ AZURE_CLIENT_ID     = os.getenv("AZURE_CLIENT_ID")
 AZURE_CLIENT_SECRET = os.getenv("AZURE_CLIENT_SECRET")
 SENDER_NAME         = os.getenv("SENDER_NAME", "Florian")
 
-TEMPLATE_PATH = Path(__file__).parent / "email_template.html"
-ATTACHMENTS   = [
+# 新加坡：有 PDF 附件
+TEMPLATE_SG   = Path(__file__).parent / "email_template.html"
+ATTACHMENTS_SG = [
     Path(__file__).parent / "company-pi" / "Corporate Account Opening Application Form .pdf",
     Path(__file__).parent / "company-pi" / "Accredited Investor Declaration Form_Corporate.pdf",
 ]
+
+# 香港：纯 HTML，无附件
+TEMPLATE_HK   = Path(__file__).parent / "email_template_hk.html"
 
 
 # ─── Microsoft Graph：获取 Token ─────────────────────────────────────────────
@@ -56,24 +61,27 @@ def get_graph_token() -> str:
     return result["access_token"]
 
 
-# ─── 发送邮件（Microsoft Graph API）─────────────────────────────────────────
+# ─── 发送邮件 ─────────────────────────────────────────────────────────────────
 
-def send_onboarding_email(to_email: str, entity_name: str) -> None:
-    html_body = TEMPLATE_PATH.read_text(encoding="utf-8")
+def send_onboarding_email(to_email: str, entity_name: str, region: str) -> None:
     subject_entity = entity_name if entity_name else "New Client"
     subject = f"HTS CORPORATE ONBOARDING – {subject_entity}"
 
-    # 读取附件并转为 base64
-    attachments = []
-    for path in ATTACHMENTS:
-        with open(path, "rb") as f:
-            content_b64 = base64.b64encode(f.read()).decode("utf-8")
-        attachments.append({
-            "@odata.type": "#microsoft.graph.fileAttachment",
-            "name": path.name,
-            "contentType": "application/pdf",
-            "contentBytes": content_b64,
-        })
+    if region == "hk":
+        html_body = TEMPLATE_HK.read_text(encoding="utf-8")
+        attachments = []
+    else:
+        html_body = TEMPLATE_SG.read_text(encoding="utf-8")
+        attachments = []
+        for path in ATTACHMENTS_SG:
+            with open(path, "rb") as f:
+                content_b64 = base64.b64encode(f.read()).decode("utf-8")
+            attachments.append({
+                "@odata.type": "#microsoft.graph.fileAttachment",
+                "name": path.name,
+                "contentType": "application/pdf",
+                "contentBytes": content_b64,
+            })
 
     payload = {
         "message": {
@@ -98,7 +106,7 @@ def send_onboarding_email(to_email: str, entity_name: str) -> None:
     if resp.status_code != 202:
         raise RuntimeError(f"Graph API 发送失败 ({resp.status_code}): {resp.text}")
 
-    logger.info(f"邮件已发送至 {to_email}")
+    logger.info(f"邮件已发送至 {to_email} [{region.upper()}]")
 
 
 # ─── AI 识别截图 ──────────────────────────────────────────────────────────────
@@ -145,17 +153,35 @@ def extract_info_from_image(image_bytes: bytes) -> dict:
 
 # ─── Telegram Bot ─────────────────────────────────────────────────────────────
 
-async def _send_confirmation(message, email: str, entity_name: str) -> None:
+async def _ask_region(message, email: str, entity_name: str) -> None:
+    """识别完成后，询问发哪个地区的邮件"""
     keyboard = InlineKeyboardMarkup([[
-        InlineKeyboardButton("✅ 确认发送", callback_data="confirm"),
+        InlineKeyboardButton("🇸🇬 新加坡", callback_data="region_sg"),
+        InlineKeyboardButton("🇭🇰 香港", callback_data="region_hk"),
         InlineKeyboardButton("❌ 取消", callback_data="cancel"),
     ]])
     await message.reply_text(
         f"识别结果：\n"
         f"📧 邮箱：{email}\n"
         f"🏢 公司：{entity_name}\n\n"
-        f"主题：HTS CORPORATE ONBOARDING – {entity_name}\n"
-        f"附件：Corporate Account Opening Form + AI Declaration Form\n\n"
+        f"请选择发送哪个地区的开户邮件：",
+        reply_markup=keyboard,
+    )
+
+
+async def _send_confirmation(message, email: str, entity_name: str, region: str) -> None:
+    region_label = "🇸🇬 新加坡" if region == "sg" else "🇭🇰 香港"
+    attachment_note = "附件：Corporate Account Opening Form + AI Declaration Form\n" if region == "sg" else ""
+    keyboard = InlineKeyboardMarkup([[
+        InlineKeyboardButton("✅ 确认发送", callback_data="confirm"),
+        InlineKeyboardButton("❌ 取消", callback_data="cancel"),
+    ]])
+    await message.reply_text(
+        f"发送确认：\n"
+        f"📧 邮箱：{email}\n"
+        f"🏢 公司：{entity_name}\n"
+        f"🌏 地区：{region_label}\n"
+        f"{attachment_note}\n"
         f"确认发送？",
         reply_markup=keyboard,
     )
@@ -165,12 +191,14 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     context.user_data["started"] = True
     await update.message.reply_text(
         "👋 HTS Onboarding Bot\n\n"
-        "使用方法：\n"
+        "📨 邮件分析：\n"
+        "• 直接粘贴邮件内容（文字），Bot 自动分析优先级、部门、摘要和待办\n\n"
+        "📋 客户开户：\n"
         "• 发送客户截图，Bot 自动识别邮箱和公司名\n"
-        "• 确认信息无误后点「确认发送」，自动发出开户邮件\n\n"
+        "• 选择新加坡或香港站，确认后自动发出开户邮件\n\n"
         "指令：\n"
         "/start — 显示此帮助\n\n"
-        "请发送截图开始。"
+        "请发送截图或粘贴邮件内容开始。"
     )
 
 
@@ -209,7 +237,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
             )
             return
 
-        await _send_confirmation(message, email, entity_name)
+        await _ask_region(message, email, entity_name)
 
     except Exception as e:
         logger.error(f"处理失败: {e}", exc_info=True)
@@ -218,16 +246,26 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     message = update.message
+    text = message.text.strip()
 
-    if not context.user_data.get("waiting_for_entity"):
+    # 开户流程：等待用户手动输入公司名
+    if context.user_data.get("waiting_for_entity"):
+        context.user_data["pending_entity"] = text
+        context.user_data["waiting_for_entity"] = False
+        email = context.user_data.get("pending_email", "")
+        await _ask_region(message, email, text)
         return
 
-    entity_name = message.text.strip()
-    context.user_data["pending_entity"] = entity_name
-    context.user_data["waiting_for_entity"] = False
-
-    email = context.user_data.get("pending_email", "")
-    await _send_confirmation(message, email, entity_name)
+    # 邮件分析：用户粘贴邮件内容（50字以上视为邮件）
+    if len(text) >= 50:
+        thinking_msg = await message.reply_text("正在分析邮件，请稍候...")
+        try:
+            result = analyze_email(text)
+            await thinking_msg.delete()
+            await message.reply_text(result, parse_mode="Markdown")
+        except Exception as e:
+            logger.error(f"邮件分析失败: {e}", exc_info=True)
+            await thinking_msg.edit_text(f"分析失败：{e}")
 
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -239,26 +277,41 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) ->
         await query.edit_message_text("已取消。")
         return
 
-    email = context.user_data.get("pending_email")
-    entity_name = context.user_data.get("pending_entity", "")
-
-    if not email:
-        await query.edit_message_text("❌ 没有待发送的邮件，请重新发送截图。")
+    # 选择地区
+    if query.data in ("region_sg", "region_hk"):
+        region = "sg" if query.data == "region_sg" else "hk"
+        context.user_data["pending_region"] = region
+        email = context.user_data.get("pending_email", "")
+        entity_name = context.user_data.get("pending_entity", "")
+        await query.delete_message()
+        await _send_confirmation(query.message.reply_to_message or query.message, email, entity_name, region)
         return
 
-    await query.edit_message_text(f"正在发送邮件给 {email}...")
+    # 确认发送
+    if query.data == "confirm":
+        email = context.user_data.get("pending_email")
+        entity_name = context.user_data.get("pending_entity", "")
+        region = context.user_data.get("pending_region", "sg")
 
-    try:
-        send_onboarding_email(email, entity_name)
-        context.user_data.clear()
-        await query.edit_message_text(
-            f"✅ 邮件已发送！\n"
-            f"收件人：{email}\n"
-            f"主题：HTS CORPORATE ONBOARDING – {entity_name or 'New Client'}"
-        )
-    except Exception as e:
-        logger.error(f"发送失败: {e}", exc_info=True)
-        await query.edit_message_text(f"❌ 发送失败：{e}")
+        if not email:
+            await query.edit_message_text("❌ 没有待发送的邮件，请重新发送截图。")
+            return
+
+        await query.edit_message_text(f"正在发送邮件给 {email}...")
+
+        try:
+            send_onboarding_email(email, entity_name, region)
+            context.user_data.clear()
+            region_label = "🇸🇬 新加坡" if region == "sg" else "🇭🇰 香港"
+            await query.edit_message_text(
+                f"✅ 邮件已发送！\n"
+                f"收件人：{email}\n"
+                f"地区：{region_label}\n"
+                f"主题：HTS CORPORATE ONBOARDING – {entity_name or 'New Client'}"
+            )
+        except Exception as e:
+            logger.error(f"发送失败: {e}", exc_info=True)
+            await query.edit_message_text(f"❌ 发送失败：{e}")
 
 
 async def handle_error(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
