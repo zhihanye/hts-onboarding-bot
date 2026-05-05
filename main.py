@@ -64,7 +64,7 @@ def get_graph_token() -> str:
 # ─── 发送邮件 ─────────────────────────────────────────────────────────────────
 
 def send_onboarding_email(to_email: str, entity_name: str, region: str) -> None:
-    subject_entity = entity_name if entity_name else "New Client"
+    subject_entity = entity_name if entity_name else "New Client"  # entity_name 已含姓名兜底
     region_prefix = "HK" if region == "hk" else "SG"
     subject = f"{region_prefix} HTS CORPORATE ONBOARDING – {subject_entity}"
 
@@ -135,9 +135,10 @@ def extract_info_from_image(image_bytes: bytes) -> dict:
                 {"type": "text", "text": (
                     "请从这张截图中提取以下信息，以JSON格式返回：\n"
                     "1. email: 客户邮箱地址\n"
-                    "2. entity_name: 公司/实体名称（如果有）\n\n"
+                    "2. entity_name: 公司/实体名称（如果有）\n"
+                    "3. person_name: 客户姓名（如果有）\n\n"
                     "只返回JSON，例如：\n"
-                    '{"email": "client@example.com", "entity_name": "ABC Company Ltd"}\n'
+                    '{"email": "client@example.com", "entity_name": "ABC Company Ltd", "person_name": "John Smith"}\n'
                     "如果某项信息不存在，对应值设为空字符串。"
                 )},
             ],
@@ -220,6 +221,7 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
         info = extract_info_from_image(image_bytes)
         email = info.get("email", "").strip()
         entity_name = info.get("entity_name", "").strip()
+        person_name = info.get("person_name", "").strip()
 
         if not email:
             await message.reply_text("未能识别出邮箱地址，请检查截图是否清晰后重试。")
@@ -227,14 +229,16 @@ async def handle_photo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> No
 
         context.user_data["pending_email"] = email
         context.user_data["pending_entity"] = entity_name
+        context.user_data["pending_person"] = person_name
 
         if not entity_name:
             context.user_data["waiting_for_entity"] = True
             await message.reply_text(
                 f"识别结果：\n"
                 f"📧 邮箱：{email}\n"
+                f"👤 姓名：{person_name or '未识别'}\n"
                 f"🏢 公司：未能识别\n\n"
-                f"请手动输入公司名称："
+                f"请手动输入公司名称（或直接发送"-"跳过，将使用客户姓名）："
             )
             return
 
@@ -251,10 +255,15 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE) -> Non
 
     # 开户流程：等待用户手动输入公司名
     if context.user_data.get("waiting_for_entity"):
-        context.user_data["pending_entity"] = text
         context.user_data["waiting_for_entity"] = False
         email = context.user_data.get("pending_email", "")
-        await _ask_region(message, email, text)
+        if text == "-":
+            # 跳过公司名，使用客户姓名
+            entity_name = context.user_data.get("pending_person", "") or "New Client"
+        else:
+            entity_name = text
+        context.user_data["pending_entity"] = entity_name
+        await _ask_region(message, email, entity_name)
         return
 
     # 邮件分析：用户粘贴邮件内容（50字以上视为邮件）
